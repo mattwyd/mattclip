@@ -200,14 +200,16 @@ def round_to_even(value: int) -> int:
 
 
 def get_scaled_font_size(base_font_size: int, video_width: int) -> int:
-    """Scale caption font size by output width with sensible bounds."""
-    scaled_size = int(base_font_size * (video_width / 720))
-    return max(24, min(64, scaled_size))
+    """Scale caption font size relative to video width (TikTok/Shorts-style)."""
+    # Floor at 9% of video width so captions are always readable on vertical shorts
+    width_floor = int(video_width * 0.09)
+    proportional = int(base_font_size * (video_width / 480))
+    return max(width_floor, min(120, proportional))
 
 
 def get_subtitle_max_width(video_width: int) -> int:
     """Return max subtitle text width with horizontal safe margins."""
-    horizontal_padding = max(40, int(video_width * 0.06))
+    horizontal_padding = max(20, int(video_width * 0.04))
     return max(200, video_width - (horizontal_padding * 2))
 
 
