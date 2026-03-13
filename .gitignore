@@ -7,3 +7,6 @@ temp/
 .env
 *.m4a
 clips/
+output/
+*.mp4
+*.mov

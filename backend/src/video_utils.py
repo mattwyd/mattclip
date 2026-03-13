@@ -1332,6 +1332,7 @@ def apply_transition_effect(
     """Apply transition effect between two clips using a transition video."""
     try:
         from moviepy import VideoFileClip, CompositeVideoClip, concatenate_videoclips
+        from moviepy.video.fx import FadeIn, FadeOut
 
         # Load clips
         clip1 = VideoFileClip(str(clip1_path))
@@ -1346,14 +1347,14 @@ def apply_transition_effect(
         clip_size = clip1.size
         transition = transition.resized(clip_size)
 
-        # Create fade effect with transition
+        # Create fade effect with transition (MoviePy v2 requires effect objects)
         fade_duration = 0.5  # Half second fade
 
         # Fade out clip1
-        clip1_faded = clip1.with_effects(["fadeout", fade_duration])
+        clip1_faded = clip1.with_effects([FadeOut(fade_duration)])
 
         # Fade in clip2
-        clip2_faded = clip2.with_effects(["fadein", fade_duration])
+        clip2_faded = clip2.with_effects([FadeIn(fade_duration)])
 
         # Combine: clip1 -> transition -> clip2
         final_clip = concatenate_videoclips(
