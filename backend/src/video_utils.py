@@ -1,6 +1,6 @@
 """
 Utility functions for video-related operations.
-Optimized for MoviePy v2, AssemblyAI integration, and high-quality output.
+Optimized for MoviePy v2 and high-quality output.
 """
 
 from pathlib import Path
@@ -14,7 +14,7 @@ import json
 import cv2
 from moviepy import VideoFileClip, CompositeVideoClip, TextClip, ColorClip
 
-import assemblyai as aai
+import whisper
 import srt
 from datetime import timedelta
 
@@ -81,61 +81,64 @@ class VideoProcessor:
 
 
 def get_video_transcript(video_path: Path, speech_model: str = "best") -> str:
-    """Get transcript using AssemblyAI with word-level timing for precise subtitles."""
+    """Get transcript using local Whisper with word-level timing for precise subtitles."""
     logger.info(f"Getting transcript for: {video_path}")
 
-    # Configure AssemblyAI
-    aai.settings.api_key = config.assembly_ai_api_key
-    transcriber = aai.Transcriber()
-
-    # Request word-level timestamps for precise subtitle sync
-    speech_model_value = aai.SpeechModel.best
+    # Map speech_model hint to a Whisper model size
     if speech_model == "nano":
-        speech_model_value = aai.SpeechModel.nano
+        model_size = "tiny"
+    else:
+        model_size = config.whisper_model  # From WHISPER_MODEL env var, default "base"
 
-    config_obj = aai.TranscriptionConfig(
-        speaker_labels=False,
-        punctuate=True,
-        format_text=True,
-        speech_model=speech_model_value,
-    )
+    logger.info(f"Loading Whisper model: {model_size}")
+    model = whisper.load_model(model_size)
 
     try:
-        logger.info("Starting AssemblyAI transcription")
-        transcript = transcriber.transcribe(str(video_path), config=config_obj)
+        logger.info("Starting local Whisper transcription")
+        result = model.transcribe(str(video_path), word_timestamps=True)
 
-        if transcript.status == aai.TranscriptStatus.error:
-            logger.error(f"AssemblyAI transcription failed: {transcript.error}")
-            raise Exception(f"Transcription failed: {transcript.error}")
+        # Flatten words from all segments; convert seconds → milliseconds
+        all_words = []
+        for segment in result.get("segments", []):
+            for word in segment.get("words", []):
+                all_words.append(
+                    {
+                        "text": word["word"].strip(),
+                        "start": int(word["start"] * 1000),
+                        "end": int(word["end"] * 1000),
+                        "confidence": word.get("probability", 1.0),
+                    }
+                )
+
+        full_text = result.get("text", "")
 
         # Format transcript with timestamps for AI analysis
         formatted_lines = []
-        if transcript.words:
-            logger.info(f"Processing {len(transcript.words)} words with precise timing")
+        if all_words:
+            logger.info(f"Processing {len(all_words)} words with precise timing")
 
-            # Group words into logical segments for readability
             current_segment = []
             current_start = None
             segment_word_count = 0
             max_words_per_segment = 8  # ~3-4 seconds of speech
 
-            for word in transcript.words:
+            for word_data in all_words:
                 if current_start is None:
-                    current_start = word.start
+                    current_start = word_data["start"]
 
-                current_segment.append(word.text)
+                current_segment.append(word_data["text"])
                 segment_word_count += 1
 
                 # End segment at natural breaks or word limit
                 if (
                     segment_word_count >= max_words_per_segment
-                    or word.text.endswith(".")
-                    or word.text.endswith("!")
-                    or word.text.endswith("?")
+                    or word_data["text"].endswith(".")
+                    or word_data["text"].endswith("!")
+                    or word_data["text"].endswith("?")
                 ):
                     if current_segment:
                         start_time = format_ms_to_timestamp(current_start)
-                        end_time = format_ms_to_timestamp(word.end)
+                        end_time = format_ms_to_timestamp(word_data["end"])
                         text = " ".join(current_segment)
                         formatted_lines.append(f"[{start_time} - {end_time}] {text}")
 
@@ -146,53 +149,30 @@ def get_video_transcript(video_path: Path, speech_model: str = "best") -> str:
             # Handle any remaining words
             if current_segment and current_start is not None:
                 start_time = format_ms_to_timestamp(current_start)
-                end_time = format_ms_to_timestamp(transcript.words[-1].end)
+                end_time = format_ms_to_timestamp(all_words[-1]["end"])
                 text = " ".join(current_segment)
                 formatted_lines.append(f"[{start_time} - {end_time}] {text}")
 
-        # Cache the raw transcript for subtitle generation
-        cache_transcript_data(video_path, transcript)
+        # Cache word-level data for subtitle generation
+        cache_path = video_path.with_suffix(".transcript_cache.json")
+        cache_data = {"words": all_words, "text": full_text}
+        with open(cache_path, "w") as f:
+            json.dump(cache_data, f)
+        logger.info(f"Cached {len(all_words)} words to {cache_path}")
 
-        result = "\n".join(formatted_lines)
+        transcript_str = "\n".join(formatted_lines)
         logger.info(
-            f"Transcript formatted: {len(formatted_lines)} segments, {len(result)} chars"
+            f"Transcript formatted: {len(formatted_lines)} segments, {len(transcript_str)} chars"
         )
-        return result
+        return transcript_str
 
     except Exception as e:
         logger.error(f"Error in transcription: {e}")
         raise
 
 
-def cache_transcript_data(video_path: Path, transcript) -> None:
-    """Cache AssemblyAI transcript data for subtitle generation."""
-    cache_path = video_path.with_suffix(".transcript_cache.json")
-
-    # Store word-level data
-    words_data = []
-    if transcript.words:
-        for word in transcript.words:
-            words_data.append(
-                {
-                    "text": word.text,
-                    "start": word.start,
-                    "end": word.end,
-                    "confidence": word.confidence
-                    if hasattr(word, "confidence")
-                    else 1.0,
-                }
-            )
-
-    cache_data = {"words": words_data, "text": transcript.text}
-
-    with open(cache_path, "w") as f:
-        json.dump(cache_data, f)
-
-    logger.info(f"Cached {len(words_data)} words to {cache_path}")
-
-
 def load_cached_transcript_data(video_path: Path) -> Optional[Dict]:
-    """Load cached AssemblyAI transcript data."""
+    """Load cached Whisper transcript data."""
     cache_path = video_path.with_suffix(".transcript_cache.json")
 
     if not cache_path.exists():
@@ -1188,9 +1168,8 @@ def create_optimized_clip(
             )
             target_width, target_height = round_to_even(new_width), round_to_even(new_height)
             processed_clip = cropped_clip
->>>>>>> 70946ce (Subtitle speed up)
 
-        # Add AssemblyAI subtitles with template support
+        # Add subtitles with template support
         final_clips = [processed_clip]
 
         if add_subtitles:
